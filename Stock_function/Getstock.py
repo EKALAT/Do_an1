@@ -7,22 +7,49 @@ EXCLUDED_STOCKS = {"VNXALL", "VNINDEX", "VN30", "HNXUPCOMIND", "HNXINDEX", "HNX3
 
 async def getstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lấy danh sách mã chứng khoán từ SSI và trả về cho user"""
-    await update.message.reply_text("🔄 Đang tải dữ liệu chứng khoán...")
-    
+    browser = None
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=False)
-            context = await browser.new_context(viewport={"width": 1000, "height": 1000})
+            # Thông báo đang tải
+            await update.message.reply_text("🔄 Đang tải dữ liệu chứng khoán...")
+            
+            # Khởi tạo browser với các tùy chọn
+            browser = await p.chromium.launch(
+                headless=False,
+                args=['--disable-dev-shm-usage', '--no-sandbox']
+            )
+            
+            # Tạo context với timeout dài hơn và tắt một số tính năng không cần thiết
+            context = await browser.new_context(
+                viewport={"width": 1000, "height": 1000},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                bypass_csp=True,
+                ignore_https_errors=True
+            )
+            
             page = await context.new_page()
-            await page.goto("https://iboard.ssi.com.vn/")
             
-            # Chờ trang tải
-            await page.wait_for_timeout(5000)  # Chờ 5 giây
+            # Tải trang với retry
+            max_retries = 3
+            retry_count = 0
             
-            # Chờ cho dữ liệu tải
-            await page.wait_for_selector(".ag-body-viewport")
-            
-            # Lấy danh sách mã chứng khoán
+            while retry_count < max_retries:
+                try:
+                    await page.goto(
+                        "https://iboard.ssi.com.vn/",
+                        timeout=60000,
+                        wait_until="networkidle"
+                    )
+                    await page.wait_for_selector(".ag-body-viewport", timeout=30000)
+                    break
+                except Exception as e:
+                    retry_count += 1
+                    if retry_count == max_retries:
+                        raise Exception(f"Không thể tải trang sau {max_retries} lần thử: {str(e)}")
+                    await update.message.reply_text(f"⚠️ Lần thử {retry_count}: Đang thử lại...")
+                    await page.reload()
+
+            # Lấy dữ liệu
             stock_code_elements = await page.locator("//div[contains(@class, 'ag-cell') and contains(@class, 'stock-symbol')]").all()
             stock_codes = []
             for el in stock_code_elements:
@@ -42,71 +69,68 @@ async def getstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 # Lấy giá thấp, cao và khối lượng
                 try:
-                    # Lấy giá thấp
-                    low_price_el = await row.query_selector("[aria-colindex='56']")
-                    low_price = await low_price_el.inner_text() if low_price_el else "N/A"
-                    
-                    # Lấy giá cao
-                    high_price_el = await row.query_selector("[aria-colindex='55']")
-                    high_price = await high_price_el.inner_text() if high_price_el else "N/A"
+                    # Lấy giá 
+                    price_el = await row.query_selector("[aria-colindex='30']")
+                    price = await price_el.inner_text() if price_el else "N/A"
                     
                     # Lấy khối lượng
-                    volume_el = await row.query_selector("[aria-colindex='54']")
+                    volume_el = await row.query_selector("[aria-colindex='31']")
                     volume = await volume_el.inner_text() if volume_el else "N/A"
+                    
+                    # Lấy Tổng khối lượng
+                    total_volume_el = await row.query_selector("[aria-colindex='54']")
+                    total_volume = await total_volume_el.inner_text() if total_volume_el else "N/A"
 
                     stocks_data.append({
                         "ma_ck": stock_code,
-                        "cao": high_price.strip(),
-                        "thap": low_price.strip(),
-                        "klgd": volume.strip()
+                        "gia": price.strip(),
+                        "klgd": volume.strip(),
+                        "tongklgd": total_volume.strip()
                     })
                 except Exception as e:
                     print(f"Lỗi khi lấy dữ liệu cho mã {stock_code}: {e}")
                     continue
 
-            await browser.close()
-
             if not stocks_data:
-                await update.message.reply_text("⚠️ Không tìm thấy dữ liệu chứng khoán!")
-                return
+                raise Exception("Không tìm thấy dữ liệu chứng khoán")
 
-            # Tạo header cho bảng
-            message = "📊 *BẢNG GIÁ CHỨNG KHOÁN*\n\n"
-            message += "`{:<6} | {:>8} | {:>8} | {:>12}`\n".format("Mã CK", "Giá Thấp", "Giá Cao", "Tổng KL")
-            message += "`" + "-"*40 + "`\n"
+            # Format và gửi kết quả
+            message = "📈 *BẢNG GIÁ CHỨNG KHOÁN REALTIME*\n"
+            message += "⏰ Cập nhật: " + time.strftime("%H:%M:%S %d/%m/%Y") + "\n\n"
+            message += "```\n"
+            message += "┌────────┬──────────┬───────────┬────────────┐\n"
+            message += "│ MÃ     │    GIÁ   │    KLGD   │   TỔNG KL  │\n"
+            message += "├────────┼──────────┼───────────┼────────────┤\n"
 
-            # Chia thành nhiều tin nhắn nếu danh sách quá dài
-            chunk_size = 30  # Số mã trong mỗi tin nhắn
-            
-            for i in range(0, len(stocks_data), chunk_size):
-                chunk = stocks_data[i:i + chunk_size]
-                chunk_message = message if i == 0 else ""  # Chỉ hiện tiêu đề ở tin nhắn đầu
-                
-                for stock in chunk:
-                    chunk_message += "`{:<6} | {:>8} | {:>8} | {:>12}`\n".format(
-                        stock["ma_ck"],
-                        stock["thap"],
-                        stock["cao"],
-                        stock["klgd"]
-                    )
-                
-                await update.message.reply_text(chunk_message, parse_mode="Markdown")
-            
+            for stock in stocks_data:
+                message += "│ {:<6} │ {:>8} │ {:>9} │ {:>10} │\n".format(
+                    stock["ma_ck"],
+                    stock["gia"],
+                    stock["klgd"],
+                    stock["tongklgd"]
+                )
+
+            message += "└────────┴──────────┴───────────┴────────────┘\n"
+            message += "```\n"
+            await update.message.reply_text(message, parse_mode="Markdown")
+
     except Exception as e:
-        print(f"Lỗi khi lấy dữ liệu chứng khoán: {e}")
-        await update.message.reply_text("⚠️ Có lỗi xảy ra khi lấy dữ liệu chứng khoán!")
+        error_message = str(e)
+        print(f"Lỗi: {error_message}")
+        if "timeout" in error_message.lower():
+            await update.message.reply_text("⚠️ Hệ thống đang tải chậm. Vui lòng thử lại sau!")
+        elif "không thể tải trang" in error_message.lower():
+            await update.message.reply_text("⚠️ Không thể kết nối đến SSI. Vui lòng thử lại sau!")
+        elif "không tìm thấy dữ liệu" in error_message.lower():
+            await update.message.reply_text("⚠️ Không tìm thấy dữ liệu chứng khoán!")
+        else:
+            await update.message.reply_text("⚠️ Có lỗi xảy ra. Vui lòng thử lại sau!")
+    
+    finally:
+        if browser:
+            await browser.close()
 
 async def chungkhoan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xử lý lệnh /chungkhoan và gửi kết quả cho user"""
-    await update.message.reply_text("🔄 Đang tải dữ liệu chứng khoán...")
-    
-    stocks = await getstock(update, context)
-    if not stocks:
-        await update.message.reply_text("⚠️ Không thể lấy dữ liệu chứng khoán!")
-        return
-
-    message = "📊 *Danh sách mã chứng khoán:*\n\n"
-    for i, stock in enumerate(stocks, 1):
-        message += f"{i}. `{stock}`\n"
-
-    await update.message.reply_text(message, parse_mode="Markdown")
+    # Gọi trực tiếp getstock thay vì lưu kết quả
+    await getstock(update, context)
