@@ -13,94 +13,86 @@ db_handler = DatabaseHandler()
 async def getstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lấy danh sách mã chứng khoán từ SSI và lưu vào database"""
     browser = None
+    start_time = datetime.now()
+    
     try:
-        await update.message.reply_text(
-            "🔄 *ĐANG CẬP NHẬT DỮ LIỆU*\n\n"
-            "• Đang kết nối đến SSI...\n"
-            "• Quá trình này có thể mất 1-2 phút\n"
-            "• Vui lòng đợi trong giây lát...",
+        # Thông báo khởi động
+        status_message = await update.message.reply_text(
+            "🔄 *TIẾN TRÌNH CẬP NHẬT DỮ LIỆU*\n\n"
+            "1. Khởi tạo kết nối ⏳\n"
+            "2. Kết nối SSI ⏳\n" 
+            "3. Tải dữ liệu ⏳\n"
+            "4. Lưu database ⏳\n\n"
+            "_Bot đang xử lý, vui lòng đợi..._",
             parse_mode='Markdown'
         )
         
         async with async_playwright() as p:
-            # Khởi tạo browser với các tùy chọn
-            browser = await p.chromium.launch(
-                headless=True,  # Chạy ẩn browser
-                args=['--disable-dev-shm-usage', '--no-sandbox']
-            )
-            
-            # Tạo context với timeout dài hơn
+            browser = await p.chromium.launch(headless=True, args=['--disable-dev-shm-usage', '--no-sandbox'])
             context = await browser.new_context(
                 viewport={"width": 1920, "height": 1080},
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             )
-            
             page = await context.new_page()
-            
-            # Tải trang với retry
-            max_retries = 3
-            retry_count = 0
-            
-            while retry_count < max_retries:
-                try:
-                    await update.message.reply_text(
-                        f"📡 *Đang tải dữ liệu... ({retry_count + 1}/{max_retries})*",
-                        parse_mode='Markdown'
-                    )
-                    
-                    await page.goto(
-                        "https://iboard.ssi.com.vn/",
-                        timeout=60000,
-                        wait_until="networkidle"
-                    )
-                    await page.wait_for_selector(".ag-body-viewport", timeout=30000)
-                    break
-                except Exception as e:
-                    retry_count += 1
-                    if retry_count == max_retries:
-                        raise Exception(f"Không thể tải trang sau {max_retries} lần thử: {str(e)}")
-                    await update.message.reply_text(
-                        f"⚠️ *Lần thử {retry_count} thất bại*\n"
-                        "Đang thử lại...",
-                        parse_mode='Markdown'
-                    )
-                    await page.reload()
 
-            await update.message.reply_text(
-                "✅ *Đã kết nối thành công*\n"
-                "Đang thu thập dữ liệu...",
+            # Thông báo đang tải dữ liệu
+            await status_message.edit_text(
+                "🔄 *TIẾN TRÌNH CẬP NHẬT DỮ LIỆU*\n\n"
+                "1. Khởi tạo kết nối ✅\n"
+                "2. Kết nối SSI ⏳\n"
+                "3. Tải dữ liệu ⏳\n"
+                "4. Lưu database ⏳\n\n"
+                "_Đang kết nối tới SSI..._",
                 parse_mode='Markdown'
             )
 
-            # Lấy dữ liệu
-            stock_code_elements = await page.locator("//div[contains(@class, 'ag-cell') and contains(@class, 'stock-symbol')]").all()
-            stock_codes = []
-            for el in stock_code_elements:
-                code = await el.inner_text()
-                if code not in EXCLUDED_STOCKS:
-                    stock_codes.append(code)
+            await page.goto("https://iboard.ssi.com.vn/", timeout=60000, wait_until="networkidle")
+            await page.wait_for_selector(".ag-body-viewport", timeout=30000)
 
-            # Lấy tất cả hàng dữ liệu
+            # Lấy danh sách mã chứng khoán
+            stock_code_elements = await page.locator("//div[contains(@class, 'ag-cell') and contains(@class, 'stock-symbol')]").all()
+            stock_codes = [await el.inner_text() for el in stock_code_elements if await el.inner_text() not in EXCLUDED_STOCKS]
+            total_stocks = len(stock_codes)
+
+            # Thông báo bắt đầu xử lý
+            await status_message.edit_text(
+                "⚙️ *ĐANG XỬ LÝ DỮ LIỆU*\n\n"
+                f"⏰ Bắt đầu: {start_time.strftime('%H:%M:%S')}\n"
+                f"📊 Tổng số mã: {total_stocks}\n"
+                "🔄 Đang xử lý: 0%\n\n"
+                "⚡️ _Bot đang làm việc..._",
+                parse_mode='Markdown'
+            )
+
+            # Xử lý dữ liệu
             rows = await page.query_selector_all(".ag-center-cols-container .ag-row")
             stocks_data = []
             processed_count = 0
-            total_stocks = len(stock_codes)
 
-            for i, row in enumerate(rows[6:]):  # Bỏ qua 6 hàng đầu
-                if i >= len(stock_codes):
+            for i, row in enumerate(rows[6:]):
+                if i >= total_stocks:
                     continue
 
                 stock_code = stock_codes[i]
                 processed_count += 1
 
-                if processed_count % 100 == 0:  # Cập nhật tiến độ mỗi 100 mã
-                    await update.message.reply_text(
-                        f"📊 *Tiến độ xử lý:* {processed_count}/{total_stocks} mã",
+                # Cập nhật tiến độ mỗi 10%
+                if processed_count % (total_stocks // 10) == 0:
+                    progress = (processed_count / total_stocks) * 100
+                    progress_bar = "█" * int(progress // 10) + "▒" * (10 - int(progress // 10))
+                    
+                    await status_message.edit_text(
+                        "⚙️ *ĐANG XỬ LÝ DỮ LIỆU*\n\n"
+                        f"⏰ Bắt đầu: {start_time.strftime('%H:%M:%S')}\n"
+                        f"📊 Tổng số mã: {total_stocks}\n"
+                        f"🔄 Đã xử lý: {processed_count}/{total_stocks}\n"
+                        f"📈 Tiến độ: {int(progress)}%\n"
+                        f"[{progress_bar}]\n\n"
+                        "⚡️ _Bot đang làm việc..._",
                         parse_mode='Markdown'
                     )
-                
+
                 try:
-                    # Lấy các thông tin cần thiết
                     price_el = await row.query_selector("[aria-colindex='30']")
                     volume_el = await row.query_selector("[aria-colindex='31']")
                     total_volume_el = await row.query_selector("[aria-colindex='54']")
@@ -115,29 +107,57 @@ async def getstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     print(f"Lỗi khi lấy dữ liệu cho mã {stock_code}: {e}")
                     continue
 
-            if not stocks_data:
-                raise Exception("Không tìm thấy dữ liệu chứng khoán")
-
-            # Lưu vào database
-            await update.message.reply_text(
-                "💾 *Đang lưu dữ liệu vào database...*",
+            # Thông báo đang lưu database
+            await status_message.edit_text(
+                "💾 *ĐANG LƯU VÀO DATABASE*\n\n"
+                f"⏰ Bắt đầu: {start_time.strftime('%H:%M:%S')}\n"
+                f"📊 Tổng số mã: {len(stocks_data)}\n"
+                "📥 Đang cập nhật database...\n\n"
+                "⚡️ _Sắp hoàn thành..._",
                 parse_mode='Markdown'
             )
 
             if await db_handler.update_stock_data(stocks_data):
+                # Tính thời gian thực hiện
+                end_time = datetime.now()
+                duration = end_time - start_time
+                minutes = duration.seconds // 60
+                seconds = duration.seconds % 60
+
+                # Tạo progress bar hoàn thành
+                complete_bar = "⬛" * 8
+
+                # Thông báo hoàn thành
                 success_message = (
-                    "✅ *CẬP NHẬT THÀNH CÔNG*\n\n"
-                    f"📊 Tổng số mã: {len(stocks_data)}\n"
-                    "⏰ Thời gian: " + datetime.now().strftime("%H:%M:%S %d/%m/%Y") + "\n\n"
-                    "💡 *Các lệnh có thể dùng:*\n"
-                    "• /allstock - Xem tất cả các mã\n"
-                    "• /theodoi <mã> - Theo dõi một mã cụ thể"
+                    "✅ *CẬP NHẬT DỮ LIỆU THÀNH CÔNG*\n"
+                    "━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    "📊 *THỐNG KÊ*\n"
+                    f"• Số mã đã xử lý: {len(stocks_data)}\n"
+                    f"• Tốc độ xử lý: {len(stocks_data)/duration.seconds:.1f} mã/s\n"
+                    f"• Thời gian: {minutes}:{seconds:02d}\n\n"
+                    "⏰ *THỜI GIAN THỰC HIỆN*\n"
+                    f"• Bắt đầu : {start_time.strftime('%H:%M:%S')}\n"
+                    f"• Kết thúc: {end_time.strftime('%H:%M:%S')}\n\n"
+                    "📈 *TIẾN TRÌNH*\n"
+                    "1. Khởi tạo kết nối ✅\n"
+                    "2. Kết nối SSI ✅\n"
+                    "3. Tải dữ liệu ✅\n"
+                    "4. Lưu database ✅\n\n"
+                    "📱 *THAO TÁC TIẾP THEO*\n"
+                    "• /allstock - Xem tổng quan thị trường\n"
+                    "• /theodoi <mã> - Theo dõi mã cụ thể\n"
+                    "• /news - Xem tin tức mới nhất\n\n"
+                    "⏰ *PHIÊN GIAO DỊCH*\n"
+                    "• Sáng  : 09:00 - 11:30\n"
+                    "• Chiều : 13:00 - 14:45\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━━\n"
+                    "�� _Bot sẽ tự động cập nhật mỗi phiên_"
                 )
-                await update.message.reply_text(success_message, parse_mode='Markdown')
+                await status_message.edit_text(success_message, parse_mode='Markdown')
             else:
-                await update.message.reply_text(
-                    "❌ *LỖI CẬP NHẬT*\n\n"
-                    "Không thể lưu dữ liệu vào database.\n"
+                await status_message.edit_text(
+                    "❌ *LỖI CẬP NHẬT DATABASE*\n\n"
+                    "Không thể lưu dữ liệu.\n"
                     "Vui lòng thử lại sau.",
                     parse_mode='Markdown'
                 )
@@ -146,27 +166,28 @@ async def getstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         error_message = str(e)
         print(f"Lỗi: {error_message}")
         
+        error_text = (
+            "❌ *LỖI HỆ THỐNG*\n\n"
+            f"⏰ Thời điểm lỗi: {datetime.now().strftime('%H:%M:%S')}\n"
+        )
+        
         if "timeout" in error_message.lower():
-            await update.message.reply_text(
-                "⚠️ *LỖI KẾT NỐI*\n\n"
-                "Hệ thống đang tải chậm.\n"
-                "Vui lòng thử lại sau vài phút.",
-                parse_mode='Markdown'
+            error_text += (
+                "📡 Lỗi kết nối tới SSI\n"
+                "💡 Vui lòng thử lại sau vài phút"
             )
         elif "không thể tải trang" in error_message.lower():
-            await update.message.reply_text(
-                "⚠️ *KHÔNG THỂ KẾT NỐI*\n\n"
-                "Không thể kết nối đến SSI.\n"
-                "Vui lòng kiểm tra lại kết nối mạng.",
-                parse_mode='Markdown'
+            error_text += (
+                "🌐 Không thể tải trang SSI\n"
+                "💡 Kiểm tra lại kết nối mạng"
             )
         else:
-            await update.message.reply_text(
-                "❌ *LỖI HỆ THỐNG*\n\n"
-                "Đã xảy ra lỗi không mong muốn.\n"
-                "Vui lòng thử lại sau hoặc liên hệ admin.",
-                parse_mode='Markdown'
+            error_text += (
+                "⚠️ Lỗi không xác định\n"
+                "💡 Vui lòng liên hệ admin"
             )
+            
+        await status_message.edit_text(error_text, parse_mode='Markdown')
     
     finally:
         if browser:
