@@ -32,23 +32,42 @@ class DatabaseHandler:
         try:
             print(f"Bắt đầu cập nhật với {len(stocks_data)} mã chứng khoán")
 
-            # Backup dữ liệu cũ vào bảng history
+            # Lấy dữ liệu hiện tại trước khi cập nhật
             cursor.execute("""
-                INSERT INTO price_history (ma_ck, gia, klgd, tongklgd)
-                SELECT ma_ck, gia, klgd, tongklgd FROM current_prices
+                SELECT ma_ck, gia, klgd, tongklgd, updated_at 
+                FROM current_prices 
                 WHERE ma_ck IS NOT NULL
             """)
-            
-            # Xóa dữ liệu cũ
+            old_data = cursor.fetchall()
+
+            if old_data:
+                # Backup dữ liệu cũ vào bảng history
+                insert_history_query = """
+                    INSERT INTO price_history 
+                    (ma_ck, gia, klgd, tongklgd, created_at) 
+                    VALUES (%s, %s, %s, %s, %s)
+                """
+                history_values = [(
+                    row[0],  # ma_ck
+                    row[1],  # gia
+                    row[2],  # klgd
+                    row[3],  # tongklgd
+                    row[4]   # updated_at (sẽ thành created_at trong history)
+                ) for row in old_data]
+                
+                cursor.executemany(insert_history_query, history_values)
+                print(f"Đã backup {len(old_data)} mã vào bảng history")
+                
+            # Xóa dữ liệu cũ từ bảng current_prices
             cursor.execute("DELETE FROM current_prices")
             
-            # Chuẩn bị câu lệnh INSERT
+            # Cập nhật dữ liệu mới
             insert_query = """
-                INSERT INTO current_prices (ma_ck, gia, klgd, tongklgd)
+                INSERT INTO current_prices 
+                (ma_ck, gia, klgd, tongklgd) 
                 VALUES (%s, %s, %s, %s)
             """
             
-            # Chuẩn bị dữ liệu để insert
             values = [(
                 stock['ma_ck'],
                 stock['gia'],
@@ -56,10 +75,7 @@ class DatabaseHandler:
                 stock['tongklgd']
             ) for stock in stocks_data]
             
-            # Thực hiện insert nhiều dòng cùng lúc
             cursor.executemany(insert_query, values)
-            
-            # Commit thay đổi
             conn.commit()
             
             # Kiểm tra số lượng đã insert

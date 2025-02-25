@@ -134,7 +134,8 @@ async def getstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "📊 *THỐNG KÊ*\n"
                     f"• Số mã đã xử lý: {len(stocks_data)}\n"
                     f"• Tốc độ xử lý: {len(stocks_data)/duration.seconds:.1f} mã/s\n"
-                    f"• Thời gian: {minutes}:{seconds:02d}\n\n"
+                    f"• Thời gian: {minutes}:{seconds:02d}\n"
+                    "• Đã lưu lịch sử giá cũ ✅\n\n"
                     "⏰ *THỜI GIAN THỰC HIỆN*\n"
                     f"• Bắt đầu : {start_time.strftime('%H:%M:%S')}\n"
                     f"• Kết thúc: {end_time.strftime('%H:%M:%S')}\n\n"
@@ -142,7 +143,8 @@ async def getstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "1. Khởi tạo kết nối ✅\n"
                     "2. Kết nối SSI ✅\n"
                     "3. Tải dữ liệu ✅\n"
-                    "4. Lưu database ✅\n\n"
+                    "4. Lưu lịch sử giá ✅\n"
+                    "5. Cập nhật giá mới ✅\n\n"
                     "📱 *THAO TÁC TIẾP THEO*\n"
                     "• /allstock - Xem tổng quan thị trường\n"
                     "• /theodoi <mã> - Theo dõi mã cụ thể\n"
@@ -151,7 +153,7 @@ async def getstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "• Sáng  : 09:00 - 11:30\n"
                     "• Chiều : 13:00 - 14:45\n\n"
                     "━━━━━━━━━━━━━━━━━━━━━\n"
-                    "�� _Bot sẽ tự động cập nhật mỗi phiên_"
+                    "💡 _Bot sẽ tự động cập nhật mỗi phiên_"
                 )
                 await status_message.edit_text(success_message, parse_mode='Markdown')
             else:
